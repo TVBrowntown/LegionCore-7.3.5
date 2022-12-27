@@ -305,10 +305,18 @@ enum Classes
 };
 
 constexpr auto CLASSMASK_ALL_PLAYABLE = 
-	((1 << (CLASS_WARRIOR - 1)) | (1 << (CLASS_PALADIN - 1)) | (1 << (CLASS_HUNTER - 1)) |
-	(1 << (CLASS_ROGUE - 1)) | (1 << (CLASS_PRIEST - 1)) | (1 << (CLASS_SHAMAN - 1)) |
-	(1 << (CLASS_MAGE - 1)) | (1 << (CLASS_WARLOCK - 1)) | (1 << (CLASS_DRUID - 1)) |
-	(1 << (CLASS_DEATH_KNIGHT - 1)) | (1 << (CLASS_MONK - 1)) | (1 << (CLASS_DEMON_HUNTER - 1)));
+((1 << (CLASS_WARRIOR - 1)) | 
+(1 << (CLASS_PALADIN - 1)) | 
+(1 << (CLASS_HUNTER - 1)) |
+(1 << (CLASS_ROGUE - 1)) | 
+(1 << (CLASS_PRIEST - 1)) | 
+(1 << (CLASS_SHAMAN - 1)) |
+(1 << (CLASS_MAGE - 1)) | 
+(1 << (CLASS_WARLOCK - 1)) | 
+(1 << (CLASS_DRUID - 1)) |
+(1 << (CLASS_DEATH_KNIGHT - 1)) | 
+(1 << (CLASS_MONK - 1)) | 
+(1 << (CLASS_DEMON_HUNTER - 1)));
 
 // valid classes for creature_template.unit_class
 enum UnitClass
@@ -1234,7 +1242,7 @@ enum SpellEffects
     SPELL_EFFECT_LOOT_CORPSE                        = 107,
     SPELL_EFFECT_DISPEL_MECHANIC                    = 108,
     SPELL_EFFECT_SUMMON_DEAD_PET                    = 109,
-    SPELL_EFFECT_110                 = 110,
+    SPELL_EFFECT_110                                = 110,
     SPELL_EFFECT_DURABILITY_DAMAGE                  = 111,
     SPELL_EFFECT_112                                = 112, // only 72759
     SPELL_EFFECT_RESURRECT_NEW                      = 113,
