@@ -1679,8 +1679,8 @@ class Player : public Unit, public GridObject<Player>
         void SetBankBagSlotCount(uint8 count) { SetByteValue(PLAYER_FIELD_BYTES_3, PLAYER_BYTES_3_OFFSET_BANK_BAG_SLOTS, count); }
         
         uint32 CustomMultiDonate = 0; // entry for multi-vendors
-        bool HasDonateToken(uint32 count) const;
-        bool ChangeDonateTokenCount(int64 change, uint8 buyType, uint64 productId);
+        bool HasToken(uint8 tokenType, uint32 count) const;
+        bool ChangeTokenCount(uint8 tokenType, int64 change, uint8 buyType, uint64 productId);
         void ModifyCanUseDonate(bool apply){ canUseDonate = apply; }
         bool GetCanUseDonate() const { return canUseDonate; }
         std::string GetInfoForDonate() const;
@@ -1931,6 +1931,8 @@ class Player : public Unit, public GridObject<Player>
         bool CanSeeStartQuest(Quest const* quest);
         bool CanTakeQuest(Quest const* quest, bool msg);
         bool CanAddQuest(Quest const* quest, bool msg);
+        void AutoCompleteObjectives(Quest const* quest, bool onlyBugged);
+        bool HasQuestObjectiveComplete(Quest const* qInfo, QuestObjective const& obj);
         bool CanCompleteQuest(uint32 quest_id);
         bool CanCompleteRepeatableQuest(Quest const* quest);
         bool CanRewardQuest(Quest const* quest, bool msg);

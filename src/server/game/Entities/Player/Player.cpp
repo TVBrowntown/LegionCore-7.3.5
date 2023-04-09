@@ -13188,7 +13188,7 @@ bool Player::IsValidPos(uint8 bag, uint8 slot, bool explicit_pos)
     return false;
 }
 
-bool Player::HasDonateToken(uint32 count) const
+bool Player::HasToken(uint8 tokenType, uint32 count) const
 {    
     if (!GetCanUseDonate()) // if this there, then will cancel next buying by all steps
     {
@@ -13200,47 +13200,50 @@ bool Player::HasDonateToken(uint32 count) const
     if (sWorld->getBoolConfig(CONFIG_DONATE_ON_TESTS))
         return true;
     
-    if (GetSession()->GetBattlePayBalance() >= count)
+    if (GetSession()->GetTokenBalance(tokenType) >= count)
         return true;
-    
+
 	ChatHandler chH = ChatHandler(const_cast<Player*>(this));
 	chH.PSendSysMessage(20000, count);
     return false;
 }
 
-bool Player::ChangeDonateTokenCount(int64 change, uint8 buyType, uint64 productId)
+bool Player::ChangeTokenCount(uint8 tokenType, int64 change, uint8 buyType, uint64 productId)
 {
     if (sWorld->getBoolConfig(CONFIG_DONATE_ON_TESTS)) // if test, then free donate
         return true;
 
-    if (change < 0 && !HasDonateToken(change * -1))
+    if (change < 0 && !HasToken(tokenType, change * -1))
         return false;
     
     ModifyCanUseDonate(false); // prevent others buying, while processing this buy
     
     SQLTransaction trans = LoginDatabase.BeginTransaction();
     
-    PreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_UPD_DONATE_TOKEN);
-    stmt->setInt64(0, change);
-    stmt->setUInt32(1, GetSession()->GetAccountId());
+    PreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_INS_OR_UPD_TOKEN);
+    stmt->setUInt32(0, GetSession()->GetAccountId());
+    stmt->setUInt8(1, tokenType);
+    stmt->setInt64(2, change);
+    stmt->setInt64(3, change);
     trans->Append(stmt);
     
-    //INSERT INTO `account_donate_token_log` (`accountId`, `realmdId`, `characterId`, `change`, `type`, `productId`) VALUES (?, ?, ?, ?, ?, ?)
+    //INSERT INTO `account_donate_token_log` (`accountId`, `realmId`, `characterId`, `change`, `tokenType`, `buyType`, `productId`) VALUES (?, ?, ?, ?, ?, ?, ?)
     stmt = LoginDatabase.GetPreparedStatement(LOGIN_INS_LOG_USE_DONATE_TOKEN);
     stmt->setUInt32(0, GetSession()->GetAccountId());
     stmt->setUInt32(1, GetSession()->_realmID);
     stmt->setUInt64(2, GetGUID().GetCounter());
     stmt->setInt64(3, change);
-    stmt->setUInt8(4, buyType);
-    stmt->setUInt64(5, productId);
+    stmt->setUInt8(4, tokenType);
+    stmt->setUInt8(5, buyType);
+    stmt->setUInt64(6, productId);
     trans->Append(stmt);
 
     uint32 guid = GetGUIDLow();
-    LoginDatabase.CommitTransaction(trans, [guid, change]() -> void
+    LoginDatabase.CommitTransaction(trans, [guid, tokenType, change]() -> void
     {
         if (Player* target = sObjectMgr->GetPlayerByLowGUID(guid))
         {
-            target->GetSession()->ChangeBattlePayBalance(change);
+            target->GetSession()->ChangeTokenBalance(tokenType, change);
             target->ModifyCanUseDonate(true); // succes, return this
             ChatHandler chH = ChatHandler(target);
             chH.PSendSysMessage(20062, change * -1);
@@ -13255,7 +13258,11 @@ std::string Player::GetInfoForDonate() const
 {
     std::ostringstream info;
 
-    info << "Player info: acc = " << GetSession()->GetAccountId() << ", bnet_acc = " << GetSession()->GetAccountId() << ", char_guid = " << GetGUIDLow()  << ", tokens = " << GetSession()->GetBattlePayBalance();
+    info <<
+    "Player info: acc = " << GetSession()->GetAccountId() <<
+    ", bnet_acc = " << GetSession()->GetAccountId() <<
+    ", char_guid = " << GetGUIDLow()  <<
+    ", tokens = " << GetSession()->GetTokenBalance(sWorld->getIntConfig(CONFIG_DONATE_VENDOR_TOKEN_TYPE));
 
     return info.str();
 }
@@ -18709,6 +18716,120 @@ bool Player::CanAddQuest(Quest const* quest, bool msg)
     return true;
 }
 
+void Player::AutoCompleteObjectives(Quest const* quest, bool onlyBugged)
+{
+    for (uint32 i = 0; i < quest->Objectives.size(); ++i)
+    {
+        QuestObjective const& obj = quest->Objectives[i];
+        if (onlyBugged && !obj.Bugged)
+            continue;
+
+        switch (obj.Type)
+        {
+            case QUEST_OBJECTIVE_ITEM:
+            {
+                uint32 curItemCount = GetItemCount(obj.ObjectID, true);
+                ItemPosCountVec dest;
+                uint8 msg = CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, obj.ObjectID, obj.Amount - curItemCount);
+                if (msg == EQUIP_ERR_OK)
+                {
+                    Item* item = StoreNewItem(dest, obj.ObjectID, true);
+                    SendNewItem(item, obj.Amount - curItemCount, true, false);
+                }
+                break;
+            }
+            case QUEST_OBJECTIVE_MONSTER:
+            {
+                if (CreatureTemplate const* creatureInfo = sObjectMgr->GetCreatureTemplate(obj.ObjectID))
+                    for (uint16 z = 0; z < obj.Amount; ++z)
+                        KilledMonster(creatureInfo, ObjectGuid::Empty);
+                break;
+            }
+            case QUEST_OBJECTIVE_GAMEOBJECT:
+            {
+                for (uint16 z = 0; z < obj.Amount; ++z)
+                    KillCreditGO(obj.ObjectID, ObjectGuid::Empty);
+                break;
+            }
+            case QUEST_OBJECTIVE_MIN_REPUTATION:
+            {
+                // assume that rep is always feasible
+                if (onlyBugged)
+                    break;
+
+                uint32 curRep = GetReputationMgr().GetReputation(obj.ObjectID);
+                if (curRep < uint32(obj.Amount))
+                    if (FactionEntry const* factionEntry = sFactionStore.LookupEntry(obj.ObjectID))
+                        GetReputationMgr().SetReputation(factionEntry, obj.Amount);
+                break;
+            }
+            case QUEST_OBJECTIVE_MAX_REPUTATION:
+            {
+                // assume that rep is always feasible
+                if (onlyBugged)
+                    break;
+
+                uint32 curRep = GetReputationMgr().GetReputation(obj.ObjectID);
+                if (curRep > uint32(obj.Amount))
+                    if (FactionEntry const* factionEntry = sFactionStore.LookupEntry(obj.ObjectID))
+                        GetReputationMgr().SetReputation(factionEntry, obj.Amount);
+                break;
+            }
+            case QUEST_OBJECTIVE_MONEY:
+            {
+                // assume that money is always feasible
+                if (onlyBugged)
+                    break;
+
+                ModifyMoney(obj.Amount);
+                break;
+            }
+        }
+    }
+}
+
+bool Player::HasQuestObjectiveComplete(Quest const* qInfo, QuestObjective const& obj)
+{
+    switch (obj.Type)
+    {
+        case QUEST_OBJECTIVE_TASK_IN_ZONE:
+        {
+            float scale = 0.0f;
+            for (QuestObjective const& task : qInfo->GetObjectives())
+            {
+                if (task.Flags & (QUEST_OBJECTIVE_FLAG_HIDE_ITEM_GAINS | QUEST_OBJECTIVE_FLAG_PART_OF_PROGRESS_BAR))
+                    scale += float(GetQuestObjectiveData(qInfo, task.StorageIndex) * task.TaskStep);
+            }
+            return scale >= 100.0f;
+        }
+        case QUEST_OBJECTIVE_PET_TRAINER_DEFEAT:
+        case QUEST_OBJECTIVE_MONSTER:
+        case QUEST_OBJECTIVE_ITEM:
+        case QUEST_OBJECTIVE_GAMEOBJECT:
+        case QUEST_OBJECTIVE_PLAYERKILLS:
+        case QUEST_OBJECTIVE_TALKTO:
+        case QUEST_OBJECTIVE_COMPLETE_CRITERIA_TREE:
+        case QUEST_OBJECTIVE_HAVE_CURRENCY:
+        case QUEST_OBJECTIVE_OBTAIN_CURRENCY:
+            return GetQuestObjectiveData(qInfo, obj.StorageIndex) >= obj.Amount;
+        case QUEST_OBJECTIVE_MIN_REPUTATION:
+            return GetReputationMgr().GetReputation(obj.ObjectID) >= obj.Amount;
+        case QUEST_OBJECTIVE_MAX_REPUTATION:
+            return GetReputationMgr().GetReputation(obj.ObjectID) <= obj.Amount;
+        case QUEST_OBJECTIVE_MONEY:
+            return HasEnoughMoney(uint64(obj.Amount));
+        case QUEST_OBJECTIVE_AREATRIGGER:
+            return GetQuestObjectiveData(qInfo, obj.StorageIndex);
+        case QUEST_OBJECTIVE_LEARNSPELL:
+            return HasSpell(obj.ObjectID);
+        case QUEST_OBJECTIVE_CURRENCY:
+            return HasCurrency(obj.ObjectID, obj.Amount);
+        default:
+            TC_LOG_DEBUG(LOG_FILTER_PLAYER, "Player::CanCompleteQuest unknown objective type %u", obj.Type);
+            return false;
+    }
+}
+
 bool Player::CanCompleteQuest(uint32 quest_id)
 {
     if (quest_id)
@@ -18739,8 +18860,6 @@ bool Player::CanCompleteQuest(uint32 quest_id)
 
         if (q_status->Status == QUEST_STATUS_INCOMPLETE)
         {
-            bool allObjComplete = true;
-
             for (QuestObjective const& obj : qInfo->GetObjectives())
             {
                 if (obj.Flags & (QUEST_OBJECTIVE_FLAG_HIDE_ITEM_GAINS | QUEST_OBJECTIVE_FLAG_PART_OF_PROGRESS_BAR))
@@ -18749,67 +18868,17 @@ bool Player::CanCompleteQuest(uint32 quest_id)
                 if (obj.Flags & QUEST_OBJECTIVE_FLAG_OPTIONAL) 
                     continue;
 
-                switch (obj.Type)
-                {
-                    case QUEST_OBJECTIVE_TASK_IN_ZONE:
-                    {
-                        float scale = 0.0f;
-                        for (QuestObjective const& task : qInfo->GetObjectives())
-                        {
-                            if (task.Flags & (QUEST_OBJECTIVE_FLAG_HIDE_ITEM_GAINS | QUEST_OBJECTIVE_FLAG_PART_OF_PROGRESS_BAR))
-                                scale += float(GetQuestObjectiveData(qInfo, task.StorageIndex) * task.TaskStep);
-                        }
-                        allObjComplete = scale >= 100.0f;
-                        break;
-                    }
-                    case QUEST_OBJECTIVE_PET_TRAINER_DEFEAT:
-                    case QUEST_OBJECTIVE_MONSTER:
-                    case QUEST_OBJECTIVE_ITEM:
-                    case QUEST_OBJECTIVE_GAMEOBJECT:
-                    case QUEST_OBJECTIVE_PLAYERKILLS:
-                    case QUEST_OBJECTIVE_TALKTO:
-                    case QUEST_OBJECTIVE_COMPLETE_CRITERIA_TREE:
-                    case QUEST_OBJECTIVE_HAVE_CURRENCY:
-                    case QUEST_OBJECTIVE_OBTAIN_CURRENCY:
-                        if (GetQuestObjectiveData(qInfo, obj.StorageIndex) < obj.Amount)
-                            allObjComplete = false;
-                        break;
-                    case QUEST_OBJECTIVE_MIN_REPUTATION:
-                        if (GetReputationMgr().GetReputation(obj.ObjectID) < obj.Amount)
-                            allObjComplete = false;
-                        break;
-                    case QUEST_OBJECTIVE_MAX_REPUTATION:
-                        if (GetReputationMgr().GetReputation(obj.ObjectID) > obj.Amount)
-                            allObjComplete = false;
-                        break;
-                    case QUEST_OBJECTIVE_MONEY:
-                        if (!HasEnoughMoney(uint64(obj.Amount)))
-                            allObjComplete = false;
-                        break;
-                    case QUEST_OBJECTIVE_AREATRIGGER:
-                        if (!GetQuestObjectiveData(qInfo, obj.StorageIndex))
-                            allObjComplete = false;
-                        break;
-                    case QUEST_OBJECTIVE_LEARNSPELL:
-                        if (!HasSpell(obj.ObjectID))
-                            allObjComplete = false;
-                        break;
-                    case QUEST_OBJECTIVE_CURRENCY:
-                        if (!HasCurrency(obj.ObjectID, obj.Amount))
-                            allObjComplete = false;
-                        break;
-                    default:
-                        TC_LOG_DEBUG(LOG_FILTER_PLAYER, "Player::CanCompleteQuest unknown objective type %u", obj.Type);
-                        return false;
-                }
+                if (!HasQuestObjectiveComplete(qInfo, obj))
+                    return false;
             }
 
             if (qInfo->HasSpecialFlag(QUEST_SPECIAL_FLAGS_TIMED) && q_status->Timer == 0)
                 return false;
 
-            return allObjComplete;
+            return true;
         }
     }
+
     return false;
 }
 
@@ -19022,6 +19091,9 @@ void Player::AddQuest(Quest const* quest, Object* questGiver)
         questGiver->ToCreature()->AI()->OnStartQuest(this, quest);
 
     SetQuestUpdate(quest_id);
+
+    // automatically complete objectives marked as bugged
+    AutoCompleteObjectives(quest, true);
 
     AddDelayedEvent(100, [this, quest_id]() -> void
     {
@@ -27773,7 +27845,7 @@ inline bool Player::_StoreOrEquipNewItem(uint32 vendorslot, uint32 item, uint8 c
         ModifyMoney(-price);
     else
     {
-        if (!ChangeDonateTokenCount(-price, Battlepay::BattlepayCustomType::VendorBuyItem, item))
+        if (!ChangeTokenCount(sWorld->getIntConfig(CONFIG_DONATE_VENDOR_TOKEN_TYPE), -price, Battlepay::BattlepayCustomType::VendorBuyItem, item))
             return false;
     }
 
@@ -27998,7 +28070,7 @@ bool Player::BuyCurrencyFromVendorSlot(ObjectGuid vendorGuid, uint32 vendorSlot,
 
     if (crItem->DonateCost)
     {
-        if (!ChangeDonateTokenCount(-crItem->DonateCost, Battlepay::BattlepayCustomType::VendorBuyCurrency, currency))
+        if (!ChangeTokenCount(sWorld->getIntConfig(CONFIG_DONATE_VENDOR_TOKEN_TYPE), -crItem->DonateCost, Battlepay::BattlepayCustomType::VendorBuyCurrency, currency))
             return false;
         
         TC_LOG_DEBUG(LOG_FILTER_DONATE, "[Buy] Currency entry = %u, cost = %u, %s", currency, crItem->DonateCost, GetInfoForDonate().c_str());
@@ -28098,7 +28170,7 @@ bool Player::BuyItemFromVendorSlot(ObjectGuid vendorguid, uint32 vendorslot, uin
     if (crItem->DonateCost)
     {
         uint32 stacks = count / pProto->VendorStackCount;
-        if (!HasDonateToken(crItem->DonateCost * stacks))
+        if (!HasToken(sWorld->getIntConfig(CONFIG_DONATE_VENDOR_TOKEN_TYPE), crItem->DonateCost * stacks))
         {
             SendEquipError(EQUIP_ERR_VENDOR_MISSING_TURNINS);
             return false;

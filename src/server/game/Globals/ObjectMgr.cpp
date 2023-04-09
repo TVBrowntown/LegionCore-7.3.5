@@ -6165,6 +6165,16 @@ SkillRangeType GetSkillRangeType(SkillRaceClassInfoEntry const* rcEntry)
     return SKILL_RANGE_LEVEL;
 }
 
+void ObjectMgr::AddQuestObjectiveBuggedState(QuestObjective const& obj, bool working)
+{
+    PreparedStatement* stmt = WorldDatabase.GetPreparedStatement(WORLD_UPD_QUEST_OBJECTIVE_BUGGED_STATE);
+    stmt->setBool(0, !working);
+    stmt->setUInt32(1, obj.ID);
+    WorldDatabase.Execute(stmt);
+
+    sQuestDataStore->SetQuestObjectiveBuggedState(obj.QuestID, obj.ID, working);
+}
+
 void ObjectMgr::LoadGameTele()
 {
     uint32 oldMSTime = getMSTime();
@@ -7194,6 +7204,8 @@ void ObjectMgr::LoadScriptNames()
       "SELECT DISTINCT(ScriptName) FROM spell_scene WHERE ScriptName <> '' "
       "UNION "
       "SELECT DISTINCT(ScriptName) FROM eventobject_template WHERE ScriptName <> '' "
+      "UNION "
+      "SELECT DISTINCT(ScriptName) FROM battlepay_product WHERE ScriptName <> '' "
       "UNION "
       "SELECT DISTINCT(script) FROM instance_template WHERE script <> ''");
 
